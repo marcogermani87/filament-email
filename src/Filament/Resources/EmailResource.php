@@ -8,6 +8,8 @@ use Filament\Forms\Components\Tabs;
 use Filament\Forms\Components\TagsInput;
 use Filament\Forms\Components\Textarea;
 use Filament\Forms\Components\TextInput;
+use Filament\Forms\Components\Toggle;
+use Filament\Forms\Components\View;
 use Filament\Forms\Components\ViewField;
 use Filament\Forms\Form;
 use Filament\Notifications\Notification;
@@ -20,7 +22,6 @@ use Filament\Tables\Filters\Filter;
 use Filament\Tables\Table;
 use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Support\Carbon;
-use Illuminate\Support\Facades\Config;
 use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Mail;
 use Illuminate\Support\Str;
@@ -42,22 +43,22 @@ class EmailResource extends Resource
 
     public static function getNavigationLabel(): string
     {
-        return Config::get('filament-email.label') ?? __('filament-email::filament-email.navigation_label');
+        return config('filament-email.label') ?? __('filament-email::filament-email.navigation_label');
     }
 
     public static function getNavigationGroup(): ?string
     {
-        return Config::get('filament-email.resource.group') ?? __('filament-email::filament-email.navigation_group');
+        return config('filament-email.resource.group') ?? __('filament-email::filament-email.navigation_group');
     }
 
     public static function getNavigationSort(): ?int
     {
-        return Config::get('filament-email.resource.sort') ?? parent::getNavigationSort();
+        return config('filament-email.resource.sort') ?? parent::getNavigationSort();
     }
 
     public static function getModel(): string
     {
-        return Config::get('filament-email.resource.model') ?? Email::class;
+        return config('filament-email.resource.model', Email::class);
     }
 
     public static function form(Form $form): Form
@@ -86,28 +87,36 @@ class EmailResource extends Resource
                             ->format(config('filament-email.resource.datetime_format'))
                             ->label(__('filament-email::filament-email.created_at')),
                     ])->columns(4),
+                Fieldset::make('attachments')
+                    ->label(__('filament-email::filament-email.attachments'))
+                    ->schema([
+                        View::make('filament-email::attachments')
+                            ->columnSpanFull(),
+                    ]),
                 Tabs::make('Content')->tabs([
                     Tabs\Tab::make(__('filament-email::filament-email.html'))
                         ->schema([
                             ViewField::make('html_body')
                                 ->label('')
-                                ->view('filament-email::filament-email.emails.html')
-                                ->view('filament-email::HtmlEmailView'),
+                                ->view('filament-email::html_view'),
                         ]),
                     Tabs\Tab::make(__('filament-email::filament-email.text'))
                         ->schema([
                             Textarea::make('text_body')
-                                ->label(''),
+                                ->label('')
+                                ->rows(20),
                         ]),
                     Tabs\Tab::make(__('filament-email::filament-email.raw'))
                         ->schema([
-                            Textarea::make('raw_body')
-                                ->label(''),
+                            ViewField::make('raw_body')
+                                ->label('')
+                                ->view('filament-email::raw_body'),
                         ]),
                     Tabs\Tab::make(__('filament-email::filament-email.debug_info'))
                         ->schema([
                             Textarea::make('sent_debug_info')
-                                ->label(''),
+                                ->label('')
+                                ->rows(20),
                         ]),
                 ])->columnSpan(2),
             ]);
@@ -136,8 +145,7 @@ class EmailResource extends Resource
                     ->form([
                         ViewField::make('html_body')
                             ->hiddenLabel()
-                            ->view('filament-email::filament-email.emails.html')
-                            ->view('filament-email::HtmlEmailView'),
+                            ->view('filament-email::html_view'),
                     ]),
                 Action::make('resend')
                     ->label(false)
@@ -181,7 +189,8 @@ class EmailResource extends Resource
                             ->nestedRecursiveRules([
                                 'email',
                             ])
-                            ->default(fn ($record): array => ! empty($record->to) ? explode(',', $record->to) : []),
+                            ->default(fn ($record): array => ! empty($record->to) ? explode(',', $record->to) : [])
+                            ->required(),
                         TagsInput::make('cc')
                             ->label(__('filament-email::filament-email.cc'))
                             ->placeholder(__('filament-email::filament-email.insert_multiple_email_placelholder'))
@@ -196,13 +205,21 @@ class EmailResource extends Resource
                                 'email',
                             ])
                             ->default(fn ($record): array => ! empty($record->bcc) ? explode(',', $record->bcc) : []),
+                        Toggle::make('attachments')
+                            ->label(__('filament-email::filament-email.add_attachments'))
+                            ->onColor('success')
+                            ->offColor('danger')
+                            ->inline(false)
+                            ->disabled(fn ($record): bool => empty($record->attachments))
+                            ->default(fn ($record): bool => ! empty($record->attachments))
+                            ->required(),
                     ])
                     ->action(function (Email $record, array $data) {
                         try {
                             Mail::to($data['to'])
                                 ->cc($data['cc'])
                                 ->bcc($data['bcc'])
-                                ->send(new ResendMail($record));
+                                ->send(new ResendMail($record, $data['attachments']));
                             Notification::make()
                                 ->title(__('filament-email::filament-email.resend_email_success'))
                                 ->success()
@@ -222,6 +239,7 @@ class EmailResource extends Resource
             ->columns([
                 TextColumn::make('from')
                     ->prefix(__('filament-email::filament-email.from').': ')
+                    ->suffix(fn (Email $record): string => ! empty($record->attachments) ? ' ('.trans_choice('filament-email::filament-email.attachments_number', count($record->attachments)).')' : '')
                     ->label(__('filament-email::filament-email.header'))
                     ->description(fn (Email $record): string => Str::limit(__('filament-email::filament-email.to').': '.$record->to, 40))
                     ->searchable(),
@@ -333,7 +351,7 @@ class EmailResource extends Resource
 
     public static function canAccess(): bool
     {
-        $roles = config('filament-email.can_access.role') ?? [];
+        $roles = config('filament-email.can_access.role', []);
 
         if (method_exists(auth()->user(), 'hasRole') && ! empty($roles)) {
             return auth()->user()->hasRole($roles);
